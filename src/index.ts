@@ -192,6 +192,7 @@ export default function loader(
   let hasCSSModules = false
   const nonWhitespaceRE = /\S+/
   if (descriptor.styles.length) {
+    const styleRequests: string[] = []
     descriptor.styles
       .filter((style) => style.src || nonWhitespaceRE.test(style.content))
       .forEach((style, i) => {
@@ -222,14 +223,25 @@ export default function loader(
             needsHotReload
           )
         } else {
-          if (asCustomElement) {
-            stylesCode += `\nimport _style_${i} from ${styleRequest}`
-          } else {
-            stylesCode += `\nimport ${styleRequest}`
-          }
+          styleRequests.push(styleRequest)
         }
-        // TODO SSR critical CSS collection
       })
+
+    /* SSR critical CSS collection */
+    stylesCode += webpack.Template.asString([
+      'function _injectStyles_(context) {',
+      webpack.Template.indent(
+        /* Require and inject styles */
+        styleRequests.map((request, i) =>
+          webpack.Template.asString([
+            `const _style_${i} = require(${request})`,
+            `if (_style_${i}.__inject__) _style_${i}.__inject__(context)`,
+          ])
+        )
+      ),
+      '}',
+    ])
+
     if (asCustomElement) {
       propsToAttach.push([
         `styles`,
@@ -280,6 +292,25 @@ export default function loader(
           )
         })
         .join(`\n`) + `\n`
+  }
+
+  /* Style injection in beforeCreate */
+  if (/_injectStyles_/.test(stylesCode)) {
+    code += webpack.Template.asString([
+      '\n',
+      `const _useSSRContext_ = require('vue').useSSRContext`,
+      'const _oldBeforeCreate_ = script.beforeCreate',
+      '',
+      'function _beforeCreate_() {',
+      webpack.Template.indent([
+        'const ssrContext = _useSSRContext_()',
+        '_injectStyles_(ssrContext)',
+        `if (typeof _oldBeforeCreate_ === 'function') { _oldBeforeCreate_() }`,
+      ]),
+      '}',
+    ])
+
+    propsToAttach.push(['beforeCreate', '_beforeCreate_'])
   }
 
   // finalize
